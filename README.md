@@ -132,6 +132,7 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
 - `rul_clip`：训练和测试标签的 RUL 截断阈值
 - `window_size`：滑动窗口长度
 - `val_ratio`：按 `unit_id` 划分验证集比例
+- `validation_mode`：`window` 或 `pseudo_test`
 - `include_op_settings`：是否将 `op1/op2/op3` 纳入输入
 - `var_threshold`：近零方差筛选阈值，仅作用于 `s1~s21`
 - `padding_mode`：测试和轨迹可视化时左侧补齐方式，支持 `repeat`、`zero`

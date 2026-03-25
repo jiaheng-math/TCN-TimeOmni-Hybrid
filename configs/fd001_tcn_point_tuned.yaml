@@ -4,6 +4,7 @@ data:
   rul_clip: 130
   window_size: 45
   val_ratio: 0.2
+  validation_mode: "pseudo_test"
   include_op_settings: false
   var_threshold: 1.0e-4
   padding_mode: "repeat"

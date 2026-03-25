@@ -86,19 +86,24 @@ class CMAPSSWindowDataset(Dataset):
 class CMAPSSDataBundle:
     train_dataset: CMAPSSWindowDataset
     val_dataset: CMAPSSWindowDataset
+    val_eval_dataset: CMAPSSWindowDataset
     test_dataset: CMAPSSWindowDataset
     train_loader: DataLoader
     val_loader: DataLoader
+    val_eval_loader: DataLoader
     test_loader: DataLoader
     feature_processor: FeatureProcessor
     train_units: list[int]
     val_units: list[int]
+    validation_mode: str
     input_dim: int
     train_df: pd.DataFrame
     val_df: pd.DataFrame
+    val_eval_df: pd.DataFrame
     test_df: pd.DataFrame
     train_features: np.ndarray
     val_features: np.ndarray
+    val_eval_features: np.ndarray
     test_features: np.ndarray
 
 
@@ -297,6 +302,43 @@ def make_sliding_window_dataset(
     return CMAPSSWindowDataset(x=x, y=y, unit_ids=unit_ids_arr, cycles=cycles_arr, mode=mode)
 
 
+def build_pseudo_test_frame(
+    frame: pd.DataFrame,
+    rul_clip: int,
+    seed: int,
+    min_remaining_rul: int = 1,
+) -> tuple[pd.DataFrame, dict[int, float]]:
+    """从完整生命周期中截取验证发动机，构造更接近真实测试集的伪测试集。
+
+    每台验证发动机仅保留一个被截断的观测前缀，标签为截断点之后的真实剩余寿命。
+    """
+    rng = np.random.default_rng(seed)
+    truncated_frames = []
+    rul_map = {}
+
+    for unit_id, unit_frame in frame.groupby("unit_id", sort=True):
+        unit_frame = unit_frame.copy()
+        max_cycle = int(unit_frame["cycle"].max())
+        max_remaining_rul = min(rul_clip, max_cycle - 1)
+
+        if max_remaining_rul < min_remaining_rul:
+            cutoff_cycle = max_cycle
+        else:
+            remaining_rul = int(rng.integers(min_remaining_rul, max_remaining_rul + 1))
+            cutoff_cycle = max_cycle - remaining_rul
+
+        truncated = unit_frame[unit_frame["cycle"] <= cutoff_cycle].copy()
+        if truncated.empty:
+            truncated = unit_frame.iloc[[0]].copy()
+            cutoff_cycle = int(truncated["cycle"].iloc[-1])
+
+        rul_map[int(unit_id)] = float(min(max_cycle - cutoff_cycle, rul_clip))
+        truncated_frames.append(truncated)
+
+    truncated_frame = pd.concat(truncated_frames, axis=0).reset_index(drop=True)
+    return truncated_frame, rul_map
+
+
 def build_unit_trajectory_windows(
     frame: pd.DataFrame,
     features: np.ndarray,
@@ -332,6 +374,9 @@ def build_dataloaders(config: dict) -> CMAPSSDataBundle:
     """
     data_cfg = config["data"]
     training_cfg = config["training"]
+    validation_mode = data_cfg.get("validation_mode", "window")
+    if validation_mode not in {"window", "pseudo_test"}:
+        raise ValueError(f"Unsupported validation mode: {validation_mode}")
 
     subset = data_cfg["subset"]
     data_dir = Path(data_cfg["data_dir"])
@@ -376,6 +421,27 @@ def build_dataloaders(config: dict) -> CMAPSSDataBundle:
         mode="val",
         padding_mode=data_cfg["padding_mode"],
     )
+    if validation_mode == "pseudo_test":
+        val_eval_df, val_eval_rul_map = build_pseudo_test_frame(
+            frame=val_split,
+            rul_clip=data_cfg["rul_clip"],
+            seed=training_cfg["seed"],
+        )
+        val_eval_features = feature_processor.transform_frame(val_eval_df)
+        val_eval_dataset = make_sliding_window_dataset(
+            frame=val_eval_df,
+            features=val_eval_features,
+            window_size=data_cfg["window_size"],
+            stride=1,
+            mode="test",
+            padding_mode=data_cfg["padding_mode"],
+            test_rul_map=val_eval_rul_map,
+        )
+    else:
+        val_eval_df = val_split
+        val_eval_features = val_features
+        val_eval_dataset = val_dataset
+
     test_dataset = make_sliding_window_dataset(
         frame=test_frame,
         features=test_features,
@@ -400,6 +466,13 @@ def build_dataloaders(config: dict) -> CMAPSSDataBundle:
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
+    val_eval_loader = DataLoader(
+        val_eval_dataset,
+        batch_size=training_cfg["batch_size"],
+        shuffle=False,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+    )
     test_loader = DataLoader(
         test_dataset,
         batch_size=training_cfg["batch_size"],
@@ -411,18 +484,23 @@ def build_dataloaders(config: dict) -> CMAPSSDataBundle:
     return CMAPSSDataBundle(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
+        val_eval_dataset=val_eval_dataset,
         test_dataset=test_dataset,
         train_loader=train_loader,
         val_loader=val_loader,
+        val_eval_loader=val_eval_loader,
         test_loader=test_loader,
         feature_processor=feature_processor,
         train_units=train_units,
         val_units=val_units,
+        validation_mode=validation_mode,
         input_dim=len(feature_processor.feature_columns),
         train_df=train_split,
         val_df=val_split,
+        val_eval_df=val_eval_df,
         test_df=test_frame,
         train_features=train_features,
         val_features=val_features,
+        val_eval_features=val_eval_features,
         test_features=test_features,
     )

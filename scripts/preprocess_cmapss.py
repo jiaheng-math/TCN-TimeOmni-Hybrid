@@ -33,11 +33,13 @@ def main() -> None:
 
     print(f"Subset: {data_cfg['subset']}")
     print(f"Train units: {len(bundle.train_units)} | Val units: {len(bundle.val_units)}")
+    print(f"Validation mode: {bundle.validation_mode}")
     print(f"Removed sensors: {bundle.feature_processor.removed_sensor_columns}")
     print(f"Kept sensors: {bundle.feature_processor.kept_sensor_columns}")
     print(f"Final feature columns: {bundle.feature_processor.feature_columns}")
     print(f"Train windows: {len(bundle.train_dataset)}")
     print(f"Val windows: {len(bundle.val_dataset)}")
+    print(f"Val eval samples: {len(bundle.val_eval_dataset)}")
     print(f"Test engines: {len(bundle.test_dataset)}")
     print(f"Scaler saved to: {scaler_path}")
 

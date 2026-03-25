@@ -307,11 +307,13 @@ def main() -> None:
     logger.info("Kept sensors: %s", bundle.feature_processor.kept_sensor_columns)
     logger.info("Input features: %s", bundle.feature_processor.feature_columns)
     logger.info(
-        "Dataset sizes | train windows: %d | val windows: %d | test engines: %d",
+        "Dataset sizes | train windows: %d | val windows: %d | val eval samples: %d | test engines: %d",
         len(bundle.train_dataset),
         len(bundle.val_dataset),
+        len(bundle.val_eval_dataset),
         len(bundle.test_dataset),
     )
+    logger.info("Validation mode: %s", bundle.validation_mode)
 
     model = build_model(config, bundle.input_dim).to(device)
     logger.info("Model parameters: %d", count_parameters(model))
@@ -401,13 +403,31 @@ def main() -> None:
             total_epochs=total_epochs,
         )
 
-        # 在发动机级别计算 val RMSE / PHM score，与 test 评估口径一致
-        val_engine = compute_engine_level_metrics(
-            val_metrics["pred"],
-            val_metrics["true"],
-            bundle.val_dataset.unit_ids,
-            bundle.val_dataset.cycles,
-        )
+        if bundle.validation_mode == "pseudo_test":
+            val_eval_metrics = run_epoch(
+                model=model,
+                loader=bundle.val_eval_loader,
+                optimizer=optimizer,
+                device=device,
+                model_type=model_type,
+                train=False,
+                config=config,
+                epoch=epoch,
+                total_epochs=total_epochs,
+                stage_name="ValPseudoTest",
+            )
+            val_engine = {
+                "rmse": val_eval_metrics["rmse"],
+                "phm_score": val_eval_metrics["phm_score"],
+            }
+        else:
+            # window 模式下，聚合每台发动机最后一个窗口的预测
+            val_engine = compute_engine_level_metrics(
+                val_metrics["pred"],
+                val_metrics["true"],
+                bundle.val_dataset.unit_ids,
+                bundle.val_dataset.cycles,
+            )
 
         record = {
             "epoch": epoch,
