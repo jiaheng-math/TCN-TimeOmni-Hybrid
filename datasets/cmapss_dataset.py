@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader, Dataset
 from utils.scaler import FeatureStandardScaler
 
 
+# CMAPSS 数据列定义：unit_id(发动机编号), cycle(工作循环数),
+# op1-op3(操作工况设置), s1-s21(21个传感器读数)
 BASE_COLUMNS = ["unit_id", "cycle", "op1", "op2", "op3"]
 SENSOR_COLUMNS = [f"s{i}" for i in range(1, 22)]
 ALL_COLUMNS = BASE_COLUMNS + SENSOR_COLUMNS
@@ -20,12 +22,18 @@ ALL_COLUMNS = BASE_COLUMNS + SENSOR_COLUMNS
 
 @dataclass
 class FeatureProcessor:
-    include_op_settings: bool
-    var_threshold: float
-    kept_sensor_columns: list[str]
-    removed_sensor_columns: list[str]
-    feature_columns: list[str]
-    scaler: FeatureStandardScaler
+    """特征处理器：封装特征选择和标准化的完整流水线。
+
+    保存了传感器筛选结果和拟合好的标准化器，
+    确保训练集和测试集使用相同的特征变换逻辑。
+    """
+
+    include_op_settings: bool            # 是否包含操作工况 op1/op2/op3
+    var_threshold: float                 # 方差阈值，低于此值的传感器被移除
+    kept_sensor_columns: list[str]       # 保留的传感器列
+    removed_sensor_columns: list[str]    # 被移除的近零方差传感器列
+    feature_columns: list[str]           # 最终使用的特征列（工况 + 保留传感器）
+    scaler: FeatureStandardScaler        # 仅在训练集上拟合的标准化器
 
     def transform_frame(self, frame: pd.DataFrame) -> np.ndarray:
         x = frame[self.feature_columns].to_numpy(dtype=np.float32)
@@ -125,6 +133,11 @@ def load_cmapss_frame(path: str | Path) -> pd.DataFrame:
 
 
 def load_rul_targets(path: str | Path, unit_ids: list[int], rul_clip: int) -> dict[int, float]:
+    """加载测试集真实 RUL 标签。
+
+    CMAPSS 测试集的 RUL 标签存储在单独文件中（RUL_FDxxx.txt），
+    每行对应一个测试发动机的真实剩余寿命，按 unit_id 排序。
+    """
     frame = pd.read_csv(path, sep=r"\s+", header=None, engine="python")
     values = frame.iloc[:, 0].to_numpy(dtype=np.float32)
     if len(values) != len(unit_ids):
@@ -133,6 +146,12 @@ def load_rul_targets(path: str | Path, unit_ids: list[int], rul_clip: int) -> di
 
 
 def add_train_rul(frame: pd.DataFrame, rul_clip: int) -> pd.DataFrame:
+    """为训练数据计算 RUL 标签。
+
+    RUL = max_cycle - current_cycle（即该发动机剩余可运行的循环数）。
+    使用分段线性（piecewise linear）策略：RUL 超过 rul_clip 的部分截断为 rul_clip，
+    因为发动机早期退化不明显，过高的 RUL 值对模型学习无实际意义。
+    """
     frame = frame.copy()
     max_cycle = frame.groupby("unit_id")["cycle"].transform("max")
     rul_raw = max_cycle - frame["cycle"]
@@ -142,6 +161,11 @@ def add_train_rul(frame: pd.DataFrame, rul_clip: int) -> pd.DataFrame:
 
 
 def split_train_val_units(frame: pd.DataFrame, val_ratio: float, seed: int) -> tuple[list[int], list[int]]:
+    """按发动机 ID 划分训练集和验证集（而非按样本划分）。
+
+    按 unit_id 划分可以防止同一发动机的不同时间窗口同时出现在训练集和验证集中，
+    避免数据泄露导致验证指标虚高。
+    """
     unit_ids = sorted(frame["unit_id"].unique().tolist())
     rng = np.random.default_rng(seed)
     shuffled = np.asarray(unit_ids)
@@ -153,6 +177,12 @@ def split_train_val_units(frame: pd.DataFrame, val_ratio: float, seed: int) -> t
 
 
 def fit_feature_processor(train_frame: pd.DataFrame, include_op_settings: bool, var_threshold: float) -> FeatureProcessor:
+    """在训练集上拟合特征处理器。
+
+    1. 基于方差阈值过滤近零方差传感器（这些传感器不含有效退化信息）
+    2. 仅在训练集上计算标准化参数（mean/std），防止数据泄露
+    """
+    # 移除方差过低的传感器（如 s1, s5 等在 FD001 中几乎恒定的传感器）
     sensor_variances = train_frame[SENSOR_COLUMNS].var(axis=0, ddof=0)
     kept_sensor_columns = sensor_variances[sensor_variances >= var_threshold].index.tolist()
     removed_sensor_columns = sensor_variances[sensor_variances < var_threshold].index.tolist()
@@ -176,6 +206,12 @@ def fit_feature_processor(train_frame: pd.DataFrame, include_op_settings: bool, 
 
 
 def pad_sequence_left(sequence: np.ndarray, target_len: int, mode: str) -> np.ndarray:
+    """左填充序列至目标长度（用于测试集中长度不足 window_size 的发动机）。
+
+    - "repeat": 重复第一个时间步填充（假设初始状态稳定）
+    - "zero": 用零填充
+    若序列已经足够长，则截取最后 target_len 个时间步。
+    """
     if len(sequence) >= target_len:
         return sequence[-target_len:]
     pad_len = target_len - len(sequence)
@@ -197,6 +233,13 @@ def make_sliding_window_dataset(
     padding_mode: str,
     test_rul_map: dict[int, float] | None = None,
 ) -> CMAPSSWindowDataset:
+    """构建滑动窗口数据集。
+
+    训练/验证集：对每个发动机使用滑动窗口（stride=1）生成多个样本，
+        每个窗口的标签为窗口最后一个时间步的 RUL。
+    测试集：每个发动机仅取最后一个窗口（代表其最终观测状态），
+        不足 window_size 的序列做左填充。
+    """
     windows = []
     labels = []
     unit_ids = []
@@ -208,6 +251,7 @@ def make_sliding_window_dataset(
         unit_cycles = unit_frame["cycle"].to_numpy()
 
         if mode == "test":
+            # 测试集：每个发动机只有最后时刻的观测，取全部历史做一个窗口
             window = pad_sequence_left(unit_features, window_size, padding_mode)
             windows.append(window)
             labels.append(test_rul_map[int(unit_id)])
@@ -215,14 +259,15 @@ def make_sliding_window_dataset(
             cycles.append(unit_cycles[-1])
             continue
 
+        # 训练/验证集：滑动窗口生成样本
         unit_rul = unit_frame["RUL"].to_numpy(dtype=np.float32)
         if len(unit_features) < window_size:
-            continue
+            continue  # 序列长度不足一个窗口则跳过
         end_indices = range(window_size - 1, len(unit_features), stride)
         for end_idx in end_indices:
             start_idx = end_idx - window_size + 1
             windows.append(unit_features[start_idx : end_idx + 1])
-            labels.append(unit_rul[end_idx])
+            labels.append(unit_rul[end_idx])  # 标签为窗口末端的 RUL
             unit_ids.append(unit_id)
             cycles.append(unit_cycles[end_idx])
 
@@ -240,6 +285,11 @@ def build_unit_trajectory_windows(
     window_size: int,
     padding_mode: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """为单个发动机的每个时间步构建预测窗口（用于退化轨迹可视化）。
+
+    与训练时的滑动窗口不同，这里为每个时间步都生成一个窗口，
+    早期时间步不足 window_size 时做左填充，使模型能对完整生命周期做预测。
+    """
     unit_frame = frame[frame["unit_id"] == unit_id].copy()
     idx = unit_frame.index.to_numpy()
     unit_features = features[idx]
@@ -256,6 +306,11 @@ def build_unit_trajectory_windows(
 
 
 def build_dataloaders(config: dict) -> CMAPSSDataBundle:
+    """构建完整的数据加载流水线。
+
+    流程：加载原始数据 → 添加 RUL 标签 → 按 unit_id 划分训练/验证集 →
+    拟合特征处理器（仅训练集）→ 标准化特征 → 构建滑动窗口 → 创建 DataLoader
+    """
     data_cfg = config["data"]
     training_cfg = config["training"]
 

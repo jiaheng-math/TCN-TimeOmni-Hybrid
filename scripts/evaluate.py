@@ -13,12 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from datasets.cmapss_dataset import build_dataloaders
-from losses.gaussian_nll import gaussian_nll_loss, mse_loss
+from losses.gaussian_nll import gaussian_nll_loss, weighted_point_loss
 from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
 from models.tcn_rul_model import TCNPointModel, TCNUncertaintyModel
 from utils.logger import get_timestamp, save_json, setup_logger
+from utils.rul import clip_rul_array
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +40,7 @@ def build_model(config: dict, input_dim: int) -> torch.nn.Module:
     return TCNUncertaintyModel(**kwargs)
 
 
-def evaluate(model, loader, dataset, device, model_type: str) -> dict:
+def evaluate(model, loader, dataset, device, model_type: str, config: dict) -> dict:
     model.eval()
     losses = []
     mu_list = []
@@ -52,7 +53,14 @@ def evaluate(model, loader, dataset, device, model_type: str) -> dict:
             y = y.to(device)
             if model_type == "point":
                 mu = model(x)
-                loss = mse_loss(mu, y)
+                loss = weighted_point_loss(
+                    mu,
+                    y,
+                    loss_name=config["training"].get("point_loss", "mse"),
+                    low_rul_threshold=config["training"].get("low_rul_threshold"),
+                    low_rul_weight=float(config["training"].get("low_rul_weight", 1.0)),
+                    smooth_l1_beta=float(config["training"].get("smooth_l1_beta", 1.0)),
+                )
                 logvar = None
             else:
                 mu, logvar = model(x)
@@ -64,6 +72,8 @@ def evaluate(model, loader, dataset, device, model_type: str) -> dict:
                 logvar_list.append(logvar.cpu().numpy())
 
     mu = np.concatenate(mu_list)
+    if config["training"].get("clip_predictions", False):
+        mu = clip_rul_array(mu, min_value=0.0, max_value=float(config["data"]["rul_clip"]))
     true = np.concatenate(true_list)
     payload = {
         "loss": float(np.mean(losses)),
@@ -111,7 +121,7 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
-    payload = evaluate(model, bundle.test_loader, bundle.test_dataset, device, model_type)
+    payload = evaluate(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
     logger.info("Loss: %.4f", payload["loss"])
     logger.info("Test RMSE: %.4f", payload["test_rmse"])
     logger.info("Test PHM Score: %.4f", payload["test_phm_score"])

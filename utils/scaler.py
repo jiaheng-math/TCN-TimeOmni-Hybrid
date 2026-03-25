@@ -36,6 +36,12 @@ class StandardScalerState:
 
 
 class FeatureStandardScaler:
+    """Z-score 标准化器：x' = (x - mean) / std。
+
+    仅在训练集上拟合（fit），然后对训练/验证/测试集统一变换（transform），
+    防止测试集信息泄露到标准化参数中。
+    """
+
     def __init__(self) -> None:
         self.mean_: np.ndarray | None = None
         self.scale_: np.ndarray | None = None
@@ -46,6 +52,7 @@ class FeatureStandardScaler:
             raise ValueError(f"Expected 2D array, got shape {x.shape}")
         self.mean_ = x.mean(axis=0)
         scale = x.std(axis=0)
+        # 标准差接近零的特征不做缩放（避免除零），置为 1.0
         scale[scale < 1e-12] = 1.0
         self.scale_ = scale
         self.feature_names = list(feature_names)

@@ -37,7 +37,9 @@ def plot_test_predictions(
     lower: np.ndarray | None = None,
     upper: np.ndarray | None = None,
 ) -> None:
+    """绘制测试集预测结果：真实 RUL vs 预测 RUL，含可选的 95% 置信区间带。"""
     output_path = _prepare_output(output_path)
+    # 按发动机编号排序
     order = np.argsort(unit_ids)
     x_axis = np.arange(len(order))
 
@@ -80,6 +82,7 @@ def plot_engine_degradation(trajectories: list[dict], output_path: str | Path) -
 
 
 def plot_warning_demo(trajectories: list[dict], output_path: str | Path) -> None:
+    """绘制维护预警等级随运行周期的演变，使用双 y 轴同时展示预警等级和 RUL 预测。"""
     output_path = _prepare_output(output_path)
     n_rows = len(trajectories)
     fig, axes = plt.subplots(n_rows, 1, figsize=(10, 3.5 * n_rows), sharex=False)

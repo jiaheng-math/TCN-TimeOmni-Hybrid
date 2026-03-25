@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from datasets.cmapss_dataset import build_dataloaders, build_unit_trajectory_windows
 from models.tcn_rul_model import TCNPointModel, TCNUncertaintyModel
 from utils.plotting import plot_engine_degradation, plot_loss_curve, plot_test_predictions, plot_warning_demo
+from utils.rul import clip_rul_array
 from utils.warning import get_warning_level
 
 
@@ -37,7 +38,8 @@ def build_model(config: dict, input_dim: int) -> torch.nn.Module:
     return TCNUncertaintyModel(**kwargs)
 
 
-def predict_dataset(model, loader, dataset, device, model_type: str) -> dict:
+def predict_dataset(model, loader, dataset, device, model_type: str, config: dict) -> dict:
+    """对整个数据集做推理，收集预测值和不确定性估计。"""
     model.eval()
     mu_list = []
     logvar_list = []
@@ -54,6 +56,8 @@ def predict_dataset(model, loader, dataset, device, model_type: str) -> dict:
                 logvar_list.append(logvar.cpu().numpy())
 
     mu = np.concatenate(mu_list)
+    if config["training"].get("clip_predictions", False):
+        mu = clip_rul_array(mu, min_value=0.0, max_value=float(config["data"]["rul_clip"]))
     payload = {
         "unit_ids": dataset.unit_ids.copy(),
         "true_rul": dataset.y.cpu().numpy(),
@@ -68,15 +72,20 @@ def predict_dataset(model, loader, dataset, device, model_type: str) -> dict:
     return payload
 
 
-def predict_unit_trajectory(model, windows: np.ndarray, device, model_type: str) -> dict:
+def predict_unit_trajectory(model, windows: np.ndarray, device, model_type: str, config: dict) -> dict:
+    """对单个发动机的完整轨迹做推理（用于退化趋势可视化）。"""
     model.eval()
     x = torch.as_tensor(windows, dtype=torch.float32).to(device)
     with torch.no_grad():
         if model_type == "point":
             mu = model(x).cpu().numpy()
+            if config["training"].get("clip_predictions", False):
+                mu = clip_rul_array(mu, min_value=0.0, max_value=float(config["data"]["rul_clip"]))
             return {"pred_mu": mu, "lower": None, "upper": None, "logvar": None}
         mu, logvar = model(x)
         mu = mu.cpu().numpy()
+        if config["training"].get("clip_predictions", False):
+            mu = clip_rul_array(mu, min_value=0.0, max_value=float(config["data"]["rul_clip"]))
         logvar = logvar.cpu().numpy()
         sigma = np.exp(0.5 * logvar)
         return {
@@ -111,7 +120,7 @@ def main() -> None:
     history = pd.read_csv(history_path)
     plot_loss_curve(history, best_epoch=int(checkpoint["epoch"]), output_path=figures_dir / f"loss_curve_{subset}_{model_type}.png")
 
-    test_payload = predict_dataset(model, bundle.test_loader, bundle.test_dataset, device, model_type)
+    test_payload = predict_dataset(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
     plot_test_predictions(
         unit_ids=test_payload["unit_ids"],
         true_rul=test_payload["true_rul"],
@@ -132,7 +141,7 @@ def main() -> None:
             window_size=config["data"]["window_size"],
             padding_mode=config["data"]["padding_mode"],
         )
-        pred_payload = predict_unit_trajectory(model, windows, device, model_type)
+        pred_payload = predict_unit_trajectory(model, windows, device, model_type, config)
         degradation_payloads.append(
             {
                 "unit_id": unit_id,
@@ -145,6 +154,7 @@ def main() -> None:
         )
 
         if model_type == "uncertainty":
+            # 使用模型输出的真实不确定性计算预警等级
             warning_levels = [
                 get_warning_level(mu=float(mu), logvar=float(logvar), config=config)["level"]
                 for mu, logvar in zip(pred_payload["pred_mu"], pred_payload["logvar"])
@@ -159,6 +169,7 @@ def main() -> None:
                 }
             )
         else:
+            # 点预测模型没有不确定性输出，使用伪 logvar（σ=1）生成预警
             pseudo_logvar = np.full_like(pred_payload["pred_mu"], fill_value=np.log(1.0), dtype=np.float32)
             warning_levels = [
                 get_warning_level(mu=float(mu), logvar=float(logvar), config=config)["level"]

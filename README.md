@@ -149,9 +149,15 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
 - `weight_decay`
 - `optimizer`：当前实现支持 `Adam`、`AdamW`，默认使用 `AdamW`
 - `scheduler`：当前实现为 `ReduceLROnPlateau`
+- `scheduler_monitor`：可选 `val_loss` 或 `val_rmse`
 - `scheduler_patience`、`scheduler_factor`
-- `early_stopping_monitor`：当前按 `val_loss` 早停
+- `early_stopping_monitor`：可选 `val_loss` 或 `val_rmse`
 - `early_stopping_patience`
+- `point_loss`：点预测损失，支持 `mse`、`smooth_l1`
+- `smooth_l1_beta`
+- `low_rul_threshold`、`low_rul_weight`：对小 RUL 样本加权
+- `gradient_clip_norm`
+- `clip_predictions`：评估与可视化时将预测裁剪到 `[0, rul_clip]`
 - `seed`
 
 `warning`：
