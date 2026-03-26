@@ -170,7 +170,7 @@ def main() -> None:
                     "unit_id": unit_id,
                     "cycles": cycles,
                     "pred_mu": pred_payload["pred_mu"],
-                    "lower": pred_payload["pred_mu"],
+                    "lower": pred_payload["pred_mu"] - 1.96,
                     "warning_levels": warning_levels,
                 }
             )
