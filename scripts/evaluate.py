@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from datasets.cmapss_dataset import build_dataloaders
-from losses.gaussian_nll import gaussian_nll_loss, weighted_point_loss
+from losses.gaussian_nll import composite_uncertainty_loss, gaussian_nll_loss, weighted_point_loss
 from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
@@ -53,7 +53,18 @@ def evaluate(model, loader, dataset, device, model_type: str, config: dict) -> d
                 logvar = None
             else:
                 mu, logvar = model(x)
-                loss = gaussian_nll_loss(mu, logvar, y)
+                plw = config["training"].get("point_loss_weight")
+                if plw is not None and float(plw) > 0:
+                    loss = composite_uncertainty_loss(
+                        mu, logvar, y,
+                        point_loss_name=config["training"].get("point_loss", "mse"),
+                        point_loss_weight=float(plw),
+                        low_rul_threshold=config["training"].get("low_rul_threshold"),
+                        low_rul_weight=float(config["training"].get("low_rul_weight", 1.0)),
+                        smooth_l1_beta=float(config["training"].get("smooth_l1_beta", 1.0)),
+                    )
+                else:
+                    loss = gaussian_nll_loss(mu, logvar, y)
             losses.append(loss.item())
             mu_list.append(mu.cpu().numpy())
             true_list.append(y.cpu().numpy())

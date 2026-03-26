@@ -4,6 +4,7 @@
 
 - 点预测 TCN baseline
 - 异方差高斯输出头的不确定性 TCN
+- 复合损失（NLL + 点预测损失）提升不确定性模型预测精度
 - 训练、验证、测试评估
 - 结果可视化
 - 基于预测区间下界和不确定性的四级预警示意
@@ -15,12 +16,15 @@ project/
 ├── data/
 ├── configs/
 │   ├── fd001_tcn_point.yaml
+│   ├── fd001_tcn_point_tuned.yaml
 │   ├── fd001_tcn_uncertainty.yaml
 │   ├── fd001_tcn_uncertainty_rmse_select.yaml
+│   ├── fd001_tcn_uncertainty_tuned.yaml
 │   └── fd003_tcn_uncertainty.yaml
 ├── datasets/
 │   └── cmapss_dataset.py
 ├── models/
+│   ├── __init__.py
 │   ├── tcn.py
 │   ├── heads.py
 │   └── tcn_rul_model.py
@@ -35,7 +39,10 @@ project/
 │   ├── scaler.py
 │   ├── logger.py
 │   ├── plotting.py
-│   └── warning.py
+│   ├── warning.py
+│   ├── training.py
+│   ├── experiment.py
+│   └── rul.py
 ├── scripts/
 │   ├── preprocess_cmapss.py
 │   ├── train.py
@@ -86,19 +93,25 @@ pip install -r requirements.txt
 
 ## 训练命令
 
-点预测：
+点预测（调优版）：
 
 ```bash
-python scripts/train.py --config configs/fd001_tcn_point.yaml
+python scripts/train.py --config configs/fd001_tcn_point_tuned.yaml
 ```
 
-不确定性模型：
+不确定性模型（调优版，复合损失）：
+
+```bash
+python scripts/train.py --config configs/fd001_tcn_uncertainty_tuned.yaml
+```
+
+不确定性模型（NLL 选模，用于不确定性校准分析）：
 
 ```bash
 python scripts/train.py --config configs/fd001_tcn_uncertainty.yaml
 ```
 
-若用于与点预测模型公平比较 `RMSE / PHM Score`，使用：
+不确定性模型（RMSE 选模，用于与点预测公平比较）：
 
 ```bash
 python scripts/train.py --config configs/fd001_tcn_uncertainty_rmse_select.yaml
@@ -110,27 +123,42 @@ python scripts/train.py --config configs/fd001_tcn_uncertainty_rmse_select.yaml
 python scripts/train.py --config configs/fd003_tcn_uncertainty.yaml
 ```
 
+断点续训：在任何训练命令后加 `--resume`。
+
 ## 评估命令
 
 ```bash
-python scripts/evaluate.py --config configs/fd001_tcn_uncertainty.yaml
+python scripts/evaluate.py --config configs/fd001_tcn_uncertainty_tuned.yaml
 ```
 
 ## 可视化命令
 
 ```bash
-python scripts/visualize.py --config configs/fd001_tcn_uncertainty.yaml
+python scripts/visualize.py --config configs/fd001_tcn_uncertainty_tuned.yaml
 ```
 
 ## 数据预处理命令
 
 ```bash
-python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
+python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty_tuned.yaml
 ```
 
 ## 配置说明
 
 所有核心参数均通过 YAML 配置管理。
+
+### 配置文件一览
+
+| 配置文件 | 模型类型 | 损失函数 | 选模指标 | 用途 |
+|---------|---------|---------|---------|------|
+| `fd001_tcn_point.yaml` | 点预测 | MSE | val_loss | 基线点预测 |
+| `fd001_tcn_point_tuned.yaml` | 点预测 | Smooth L1 + 低RUL加权 | val_rmse | 调优点预测 |
+| `fd001_tcn_uncertainty.yaml` | 不确定性 | Gaussian NLL | val_loss | 不确定性校准分析 |
+| `fd001_tcn_uncertainty_rmse_select.yaml` | 不确定性 | Gaussian NLL | val_rmse | 与点预测公平比较 |
+| `fd001_tcn_uncertainty_tuned.yaml` | 不确定性 | NLL + Smooth L1 复合损失 | val_rmse | 调优不确定性模型 |
+| `fd003_tcn_uncertainty.yaml` | 不确定性 | NLL + Smooth L1 复合损失 | val_rmse | FD003 迁移 |
+
+### 配置字段
 
 `data`：
 
@@ -166,6 +194,10 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
 - `early_stopping_patience`
 - `point_loss`：点预测损失，支持 `mse`、`smooth_l1`
 - `smooth_l1_beta`
+- `point_loss_weight`：复合损失中点预测损失的权重 λ（仅不确定性模型）
+  - 总损失 = NLL + λ × PointLoss
+  - 不设置或为 0 时退化为纯 NLL
+  - 建议范围 0.1 ~ 0.5，越大越偏向点预测精度
 - `low_rul_threshold`、`low_rul_weight`：对小 RUL 样本加权
 - `gradient_clip_norm`
 - `clip_predictions`：评估与可视化时将预测裁剪到 `[0, rul_clip]`
@@ -215,7 +247,7 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
 - `20 < lower <= 50`：预警
 - `lower <= 20`：危险
 
-若 `sigma > sigma_threshold` 且当前等级不是“危险”，则上调一级。
+若 `sigma > sigma_threshold` 且当前等级不是"危险"，则上调一级。
 
 ## 实现细节
 
@@ -224,3 +256,5 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty.yaml
 - 近零方差筛选和标准化仅使用训练集拟合，再应用到 val/test
 - benchmark 测试集每台发动机仅保留一个最后窗口，标签直接来自 `RUL_FDxxx.txt`
 - 训练完成后自动在测试集评估，并将结果追加到 `results/results_summary.csv`
+- 训练引擎（`run_epoch`、`evaluate_on_test` 等）统一抽取到 `utils/training.py`，三个脚本共享同一套评估逻辑
+- 模型构建函数 `build_model` 统一放在 `models/__init__.py`，避免重复定义
