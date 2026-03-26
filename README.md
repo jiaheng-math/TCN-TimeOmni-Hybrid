@@ -42,6 +42,7 @@ project/
 │   ├── warning.py
 │   ├── training.py
 │   ├── experiment.py
+│   ├── calibration.py
 │   └── rul.py
 ├── scripts/
 │   ├── preprocess_cmapss.py
@@ -69,6 +70,7 @@ project/
 - numpy `1.26.4`
 - pandas `2.2.3`
 - scikit-learn `1.5.2`
+- scipy `1.14.1`
 - matplotlib `3.9.2`
 - PyYAML `6.0.2`
 - tqdm `4.66.5`
@@ -226,7 +228,7 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty_tuned
   - `d < 0` 时，`exp(-d / 13) - 1`
   - `d >= 0` 时，`exp(d / 10) - 1`
 - `Gaussian NLL`：不确定性模型的训练和早停指标
-- `PICP`：预测区间覆盖率
+- `PICP`：预测区间覆盖率（校准后应接近 0.95）
 - `MPIW`：预测区间平均宽度
 
 ## 预警逻辑说明
@@ -258,3 +260,4 @@ python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty_tuned
 - 训练完成后自动在测试集评估，并将结果追加到 `results/results_summary.csv`
 - 训练引擎（`run_epoch`、`evaluate_on_test` 等）统一抽取到 `utils/training.py`，三个脚本共享同一套评估逻辑
 - 模型构建函数 `build_model` 统一放在 `models/__init__.py`，避免重复定义
+- 不确定性模型训练完成后自动进行后验 σ 校准（temperature scaling）：在验证集上搜索缩放系数 T 使 PICP 达到 95%，不改变 μ 精度。校准系数保存到 `results/checkpoints/sigma_scale_*.json`，评估和可视化时自动加载

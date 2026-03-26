@@ -19,6 +19,7 @@ from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
 from models import build_model
 from utils.experiment import get_experiment_name
+from utils.calibration import apply_sigma_scale, calibrate_sigma_scale
 from utils.logger import get_timestamp, save_json, setup_logger
 from utils.rul import clip_rul_array
 
@@ -123,12 +124,48 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
 
     payload = evaluate(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
+
+    # 不确定性校准：加载或重新拟合 sigma_scale
+    if model_type == "uncertainty":
+        sigma_scale_path = Path(config["output"]["checkpoint_dir"]) / f"sigma_scale_{experiment_name}.json"
+        if sigma_scale_path.exists():
+            import json
+            with open(sigma_scale_path) as fp:
+                sigma_scale = json.load(fp)["sigma_scale"]
+            logger.info("Loaded sigma scale: T = %.4f", sigma_scale)
+        else:
+            # 在验证集上重新拟合
+            val_payload = evaluate(model, bundle.val_eval_loader, bundle.val_eval_dataset, device, model_type, config)
+            val_sigma = np.exp(0.5 * np.concatenate([np.asarray(payload["lower"])]))  # dummy, use proper sigma
+            # 从 lower/upper 反推 sigma
+            val_mu = np.asarray(val_payload["pred_mu"])
+            val_raw_lower = np.asarray(val_payload["lower"])
+            val_raw_sigma = (val_mu - val_raw_lower) / 1.96
+            val_true = np.asarray(val_payload["true_rul"])
+            sigma_scale = calibrate_sigma_scale(val_mu, val_raw_sigma, val_true)
+            save_json({"sigma_scale": sigma_scale}, sigma_scale_path)
+            logger.info("Calibrated sigma scale on val set: T = %.4f", sigma_scale)
+
+        test_mu = np.asarray(payload["pred_mu"])
+        test_raw_lower = np.asarray(payload["lower"])
+        test_raw_sigma = (test_mu - test_raw_lower) / 1.96
+        test_true = np.asarray(payload["true_rul"])
+        cal = apply_sigma_scale(test_mu, test_raw_sigma, sigma_scale)
+        payload["test_picp_raw"] = payload["test_picp"]
+        payload["test_mpiw_raw"] = payload["test_mpiw"]
+        payload["test_picp"] = compute_picp(cal["lower"], cal["upper"], test_true)
+        payload["test_mpiw"] = compute_mpiw(cal["lower"], cal["upper"])
+        payload["lower"] = cal["lower"].tolist()
+        payload["upper"] = cal["upper"].tolist()
+        payload["sigma_scale"] = sigma_scale
+
     logger.info("Loss: %.4f", payload["loss"])
     logger.info("Test RMSE: %.4f", payload["test_rmse"])
     logger.info("Test PHM Score: %.4f", payload["test_phm_score"])
     if model_type == "uncertainty":
-        logger.info("Test PICP: %.4f", payload["test_picp"])
-        logger.info("Test MPIW: %.4f", payload["test_mpiw"])
+        logger.info("Test PICP (raw): %.4f", payload["test_picp_raw"])
+        logger.info("Test PICP (cal): %.4f", payload["test_picp"])
+        logger.info("Test MPIW (cal): %.4f", payload["test_mpiw"])
 
     eval_path = Path(config["output"]["logs_dir"]) / f"evaluation_{experiment_name}_{timestamp}.json"
     save_json(payload, eval_path)

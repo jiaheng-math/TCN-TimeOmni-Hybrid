@@ -18,6 +18,7 @@ from datasets.cmapss_dataset import build_dataloaders
 from models import build_model, count_parameters
 from utils.experiment import get_experiment_name
 from utils.logger import append_results_summary, get_timestamp, save_history, save_json, setup_logger
+from utils.calibration import apply_sigma_scale, calibrate_sigma_scale
 from utils.seed import set_seed
 from utils.training import (
     compute_engine_level_metrics,
@@ -267,7 +268,46 @@ def main() -> None:
     # 加载最佳 checkpoint（而非最后一个 epoch 的模型）进行测试
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
+
+    # ========== 不确定性校准：在验证集上拟合 σ 缩放系数 ==========
+    import numpy as np
+
+    sigma_scale = None
+    sigma_scale_path = Path(config["output"]["checkpoint_dir"]) / f"sigma_scale_{experiment_name}.json"
+    if model_type == "uncertainty":
+        val_cal_metrics = run_epoch(
+            model=model,
+            loader=bundle.val_eval_loader,
+            optimizer=None,
+            device=device,
+            model_type=model_type,
+            train=False,
+            config=config,
+            stage_name="Calibration",
+        )
+        val_sigma = np.exp(0.5 * val_cal_metrics["logvar"])
+        sigma_scale = calibrate_sigma_scale(val_cal_metrics["mu"], val_sigma, val_cal_metrics["true"])
+        save_json({"sigma_scale": sigma_scale}, sigma_scale_path)
+        logger.info("Sigma scale calibrated on val set: T = %.4f", sigma_scale)
+
     test_result = evaluate_on_test(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
+
+    # 用校准后的 σ 重算 PICP / MPIW
+    if model_type == "uncertainty" and sigma_scale is not None:
+        test_mu = np.asarray(test_result["pred_mu"])
+        test_sigma = np.exp(0.5 * np.asarray(test_result.get("logvar", 0)))
+        # evaluate_on_test 不返回 logvar，从 lower/upper 反推原始 sigma
+        test_raw_lower = np.asarray(test_result["lower"])
+        test_raw_sigma = (test_mu - test_raw_lower) / 1.96
+        cal = apply_sigma_scale(test_mu, test_raw_sigma, sigma_scale)
+        from metrics.uncertainty_metrics import compute_mpiw, compute_picp
+        test_result["test_picp_raw"] = test_result["test_picp"]
+        test_result["test_mpiw_raw"] = test_result["test_mpiw"]
+        test_result["test_picp"] = compute_picp(cal["lower"], cal["upper"], np.asarray(test_result["true_rul"]))
+        test_result["test_mpiw"] = compute_mpiw(cal["lower"], cal["upper"])
+        test_result["lower"] = cal["lower"].tolist()
+        test_result["upper"] = cal["upper"].tolist()
+        test_result["sigma_scale"] = sigma_scale
 
     result_record = {
         "timestamp": timestamp,
@@ -285,6 +325,7 @@ def main() -> None:
     if model_type == "uncertainty":
         result_record["test_picp"] = test_result["test_picp"]
         result_record["test_mpiw"] = test_result["test_mpiw"]
+        result_record["sigma_scale"] = sigma_scale
     append_results_summary(result_record, results_summary_path)
 
     test_log_path = Path(config["output"]["logs_dir"]) / f"test_metrics_{experiment_name}_{timestamp}.json"
@@ -301,8 +342,10 @@ def main() -> None:
     logger.info("  Test RMSE        : %.4f", test_result["test_rmse"])
     logger.info("  Test PHM Score   : %.4f", test_result["test_phm_score"])
     if model_type == "uncertainty":
-        logger.info("  Test PICP        : %.4f", test_result["test_picp"])
-        logger.info("  Test MPIW        : %.4f", test_result["test_mpiw"])
+        logger.info("  Test PICP (raw)  : %.4f", test_result.get("test_picp_raw", test_result["test_picp"]))
+        logger.info("  Test PICP (cal)  : %.4f", test_result["test_picp"])
+        logger.info("  Test MPIW (cal)  : %.4f", test_result["test_mpiw"])
+        logger.info("  Sigma scale      : %.4f", sigma_scale)
     logger.info("=" * 60)
 
 

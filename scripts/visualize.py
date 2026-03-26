@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.cmapss_dataset import build_dataloaders, build_unit_trajectory_windows
 from models import build_model
+from utils.calibration import apply_sigma_scale
 from utils.experiment import get_experiment_name
 from utils.plotting import plot_engine_degradation, plot_loss_curve, plot_test_predictions, plot_warning_demo
 from utils.rul import clip_rul_array
@@ -103,6 +104,16 @@ def main() -> None:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
+    # 加载 σ 校准系数（不确定性模型）
+    sigma_scale = None
+    if model_type == "uncertainty":
+        import json
+        sigma_scale_path = Path(config["output"]["checkpoint_dir"]) / f"sigma_scale_{experiment_name}.json"
+        if sigma_scale_path.exists():
+            with open(sigma_scale_path) as fp:
+                sigma_scale = json.load(fp)["sigma_scale"]
+            print(f"Loaded sigma scale: T = {sigma_scale:.4f}")
+
     figures_dir = Path(config["output"]["figures_dir"])
     history_path = Path(config["output"]["logs_dir"]) / f"history_{experiment_name}.csv"
     if not history_path.exists():
@@ -111,6 +122,11 @@ def main() -> None:
     plot_loss_curve(history, best_epoch=int(checkpoint["epoch"]), output_path=figures_dir / f"loss_curve_{experiment_name}.png")
 
     test_payload = predict_dataset(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
+    if sigma_scale is not None and test_payload.get("lower") is not None:
+        raw_sigma = (test_payload["pred_mu"] - test_payload["lower"]) / 1.96
+        cal = apply_sigma_scale(test_payload["pred_mu"], raw_sigma, sigma_scale)
+        test_payload["lower"] = cal["lower"]
+        test_payload["upper"] = cal["upper"]
     plot_test_predictions(
         unit_ids=test_payload["unit_ids"],
         true_rul=test_payload["true_rul"],
@@ -132,6 +148,17 @@ def main() -> None:
             padding_mode=config["data"]["padding_mode"],
         )
         pred_payload = predict_unit_trajectory(model, windows, device, model_type, config)
+
+        # 对不确定性模型应用 σ 校准
+        if sigma_scale is not None and pred_payload["lower"] is not None:
+            raw_sigma = (pred_payload["pred_mu"] - pred_payload["lower"]) / 1.96
+            cal = apply_sigma_scale(pred_payload["pred_mu"], raw_sigma, sigma_scale)
+            pred_payload["lower"] = cal["lower"]
+            pred_payload["upper"] = cal["upper"]
+            # logvar 也更新为校准后的值，用于预警计算
+            calibrated_sigma = cal["sigma"]
+            pred_payload["logvar"] = 2.0 * np.log(calibrated_sigma)
+
         degradation_payloads.append(
             {
                 "unit_id": unit_id,
@@ -144,7 +171,6 @@ def main() -> None:
         )
 
         if model_type == "uncertainty":
-            # 使用模型输出的真实不确定性计算预警等级
             warning_levels = [
                 get_warning_level(mu=float(mu), logvar=float(logvar), config=config)["level"]
                 for mu, logvar in zip(pred_payload["pred_mu"], pred_payload["logvar"])
@@ -159,7 +185,6 @@ def main() -> None:
                 }
             )
         else:
-            # 点预测模型没有不确定性输出，使用伪 logvar（σ=1）生成预警
             pseudo_logvar = np.full_like(pred_payload["pred_mu"], fill_value=np.log(1.0), dtype=np.float32)
             warning_levels = [
                 get_warning_level(mu=float(mu), logvar=float(logvar), config=config)["level"]
