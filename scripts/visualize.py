@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.cmapss_dataset import build_dataloaders, build_unit_trajectory_windows
 from models.tcn_rul_model import TCNPointModel, TCNUncertaintyModel
+from utils.experiment import get_experiment_name
 from utils.plotting import plot_engine_degradation, plot_loss_curve, plot_test_predictions, plot_warning_demo
 from utils.rul import clip_rul_array
 from utils.warning import get_warning_level
@@ -103,22 +104,23 @@ def main() -> None:
 
     subset = config["data"]["subset"]
     model_type = config["model"]["type"]
+    experiment_name = get_experiment_name(config, args.config)
     bundle = build_dataloaders(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(config, bundle.input_dim).to(device)
 
-    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{subset}_{model_type}.pth"
+    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{experiment_name}.pth"
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     figures_dir = Path(config["output"]["figures_dir"])
-    history_path = Path(config["output"]["logs_dir"]) / f"history_{subset}_{model_type}.csv"
+    history_path = Path(config["output"]["logs_dir"]) / f"history_{experiment_name}.csv"
     if not history_path.exists():
         raise FileNotFoundError(f"Training history not found: {history_path}")
     history = pd.read_csv(history_path)
-    plot_loss_curve(history, best_epoch=int(checkpoint["epoch"]), output_path=figures_dir / f"loss_curve_{subset}_{model_type}.png")
+    plot_loss_curve(history, best_epoch=int(checkpoint["epoch"]), output_path=figures_dir / f"loss_curve_{experiment_name}.png")
 
     test_payload = predict_dataset(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
     plot_test_predictions(
@@ -127,7 +129,7 @@ def main() -> None:
         pred_mu=test_payload["pred_mu"],
         lower=test_payload.get("lower"),
         upper=test_payload.get("upper"),
-        output_path=figures_dir / f"rul_prediction_{subset}_{model_type}.png",
+        output_path=figures_dir / f"rul_prediction_{experiment_name}.png",
     )
 
     selected_units = bundle.val_units[: min(4, len(bundle.val_units))]
@@ -187,11 +189,11 @@ def main() -> None:
 
     plot_engine_degradation(
         degradation_payloads,
-        figures_dir / f"engine_degradation_{subset}.png",
+        figures_dir / f"engine_degradation_{experiment_name}.png",
     )
     plot_warning_demo(
         warning_payloads,
-        figures_dir / f"warning_demo_{subset}.png",
+        figures_dir / f"warning_demo_{experiment_name}.png",
     )
     print(f"Figures saved to: {figures_dir}")
 

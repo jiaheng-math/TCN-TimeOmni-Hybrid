@@ -23,6 +23,7 @@ from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
 from models.tcn_rul_model import TCNPointModel, TCNUncertaintyModel
+from utils.experiment import get_experiment_name
 from utils.logger import append_results_summary, get_timestamp, save_history, save_json, setup_logger
 from utils.rul import clip_rul_array
 from utils.seed import set_seed
@@ -291,17 +292,18 @@ def main() -> None:
 
     subset = config["data"]["subset"]
     model_type = config["model"]["type"]
+    experiment_name = get_experiment_name(config, args.config)
     timestamp = get_timestamp()
     logger = setup_logger(
-        name=f"train_{subset}_{model_type}",
+        name=f"train_{experiment_name}",
         log_dir=config["output"]["logs_dir"],
-        filename=f"train_{subset}_{model_type}_{timestamp}.log",
+        filename=f"train_{experiment_name}_{timestamp}.log",
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Loading data for subset %s", subset)
     bundle = build_dataloaders(config)
-    bundle.feature_processor.save(Path(config["output"]["checkpoint_dir"]) / f"scaler_{subset}_{model_type}.json")
+    bundle.feature_processor.save(Path(config["output"]["checkpoint_dir"]) / f"scaler_{experiment_name}.json")
     logger.info("Train units: %d | Val units: %d", len(bundle.train_units), len(bundle.val_units))
     logger.info("Removed sensors: %s", bundle.feature_processor.removed_sensor_columns)
     logger.info("Kept sensors: %s", bundle.feature_processor.kept_sensor_columns)
@@ -336,11 +338,11 @@ def main() -> None:
         factor=config["training"]["scheduler_factor"],
     )
 
-    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{subset}_{model_type}.pth"
+    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{experiment_name}.pth"
     # 断点续训用的 latest checkpoint（每个 epoch 都保存，包含完整训练状态）
-    latest_checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"latest_model_{subset}_{model_type}.pth"
-    history_path = Path(config["output"]["logs_dir"]) / f"history_{subset}_{model_type}.csv"
-    train_summary_path = Path(config["output"]["logs_dir"]) / f"train_summary_{subset}_{model_type}.json"
+    latest_checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"latest_model_{experiment_name}.pth"
+    history_path = Path(config["output"]["logs_dir"]) / f"history_{experiment_name}.csv"
+    train_summary_path = Path(config["output"]["logs_dir"]) / f"train_summary_{experiment_name}.json"
     results_summary_path = Path(config["output"]["results_dir"]) / "results_summary.csv"
 
     monitor_name = config["training"].get("early_stopping_monitor", "val_loss")
@@ -489,6 +491,7 @@ def main() -> None:
         {
             "subset": subset,
             "model_type": model_type,
+            "experiment_name": experiment_name,
             "best_epoch": best_epoch,
             "best_monitor": monitor_name,
             "best_monitor_value": best_monitor_value,
@@ -509,6 +512,7 @@ def main() -> None:
         "timestamp": timestamp,
         "subset": subset,
         "model_type": model_type,
+        "experiment_name": experiment_name,
         "best_epoch": best_epoch,
         "best_monitor": monitor_name,
         "best_monitor_value": best_monitor_value,
@@ -522,7 +526,7 @@ def main() -> None:
         result_record["test_mpiw"] = test_result["test_mpiw"]
     append_results_summary(result_record, results_summary_path)
 
-    test_log_path = Path(config["output"]["logs_dir"]) / f"test_metrics_{subset}_{model_type}_{timestamp}.json"
+    test_log_path = Path(config["output"]["logs_dir"]) / f"test_metrics_{experiment_name}_{timestamp}.json"
     save_json(test_result, test_log_path)
 
     # ========== 训练总结 ==========

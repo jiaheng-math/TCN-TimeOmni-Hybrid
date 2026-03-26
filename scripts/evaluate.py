@@ -18,6 +18,7 @@ from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
 from models.tcn_rul_model import TCNPointModel, TCNUncertaintyModel
+from utils.experiment import get_experiment_name
 from utils.logger import get_timestamp, save_json, setup_logger
 from utils.rul import clip_rul_array
 
@@ -104,16 +105,17 @@ def main() -> None:
 
     subset = config["data"]["subset"]
     model_type = config["model"]["type"]
+    experiment_name = get_experiment_name(config, args.config)
     timestamp = get_timestamp()
     logger = setup_logger(
-        name=f"eval_{subset}_{model_type}",
+        name=f"eval_{experiment_name}",
         log_dir=config["output"]["logs_dir"],
-        filename=f"evaluate_{subset}_{model_type}_{timestamp}.log",
+        filename=f"evaluate_{experiment_name}_{timestamp}.log",
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bundle = build_dataloaders(config)
-    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{subset}_{model_type}.pth"
+    checkpoint_path = Path(config["output"]["checkpoint_dir"]) / f"best_model_{experiment_name}.pth"
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
@@ -129,7 +131,7 @@ def main() -> None:
         logger.info("Test PICP: %.4f", payload["test_picp"])
         logger.info("Test MPIW: %.4f", payload["test_mpiw"])
 
-    eval_path = Path(config["output"]["logs_dir"]) / f"evaluation_{subset}_{model_type}_{timestamp}.json"
+    eval_path = Path(config["output"]["logs_dir"]) / f"evaluation_{experiment_name}_{timestamp}.json"
     save_json(payload, eval_path)
     print(f"Evaluation saved to: {eval_path}")
 

@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from datasets.cmapss_dataset import build_dataloaders
+from utils.experiment import get_experiment_name
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,8 +28,9 @@ def main() -> None:
     bundle = build_dataloaders(config)
     data_cfg = config["data"]
     output_cfg = config["output"]
+    experiment_name = get_experiment_name(config, args.config)
 
-    scaler_path = Path(output_cfg["checkpoint_dir"]) / f"scaler_{data_cfg['subset']}.json"
+    scaler_path = Path(output_cfg["checkpoint_dir"]) / f"scaler_{experiment_name}.json"
     bundle.feature_processor.save(scaler_path)
 
     print(f"Subset: {data_cfg['subset']}")
