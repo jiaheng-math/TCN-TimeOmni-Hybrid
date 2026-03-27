@@ -22,10 +22,10 @@ training:
   weight_decay: 5.0e-5
   optimizer: "AdamW"
   scheduler: "ReduceLROnPlateau"
-  scheduler_monitor: "val_rmse"
+  scheduler_monitor: "val_cal_selection_score"
   scheduler_patience: 6
   scheduler_factor: 0.5
-  early_stopping_monitor: "val_rmse"
+  early_stopping_monitor: "val_cal_selection_score"
   early_stopping_patience: 25
   point_loss: "smooth_l1"
   smooth_l1_beta: 2.0
@@ -36,6 +36,12 @@ training:
   clip_predictions: true
   force_tqdm: true
   seed: 42
+  uncertainty_selection:
+    target_picp: 0.95
+    min_picp: 0.90
+    alpha: 0.05
+    z_value: 1.96
+    picp_penalty_weight: 1000.0
 
 warning:
   thresholds:

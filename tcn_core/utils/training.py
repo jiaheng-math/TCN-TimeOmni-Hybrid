@@ -11,15 +11,14 @@ from losses.gaussian_nll import composite_uncertainty_loss, gaussian_nll_loss, w
 from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
 from metrics.uncertainty_metrics import compute_mpiw, compute_picp
+from utils.calibration import calibrate_sigma_scale, summarize_calibrated_uncertainty
 from utils.rul import clip_rul_array
 
 
-def get_monitor_value(val_loss: float, val_rmse: float, monitor_name: str) -> float:
-    if monitor_name == "val_loss":
-        return val_loss
-    if monitor_name == "val_rmse":
-        return val_rmse
-    raise ValueError(f"Unsupported monitor: {monitor_name}")
+def get_monitor_value(metrics: dict, monitor_name: str) -> float:
+    if monitor_name not in metrics:
+        raise ValueError(f"Unsupported monitor: {monitor_name}")
+    return float(metrics[monitor_name])
 
 
 def maybe_clip_predictions(pred: np.ndarray, config: dict) -> np.ndarray:
@@ -211,6 +210,64 @@ def evaluate_on_test(model, loader, dataset, device, model_type: str, config: di
         result["sigma_mean"] = metrics["sigma_mean"]
         result["sigma_std"] = metrics["sigma_std"]
     return result
+
+
+def compute_calibrated_uncertainty_metrics(
+    metrics: dict,
+    config: dict,
+) -> dict:
+    """基于验证集输出，拟合 sigma scale 并计算校准后的区间指标。"""
+    if "logvar" not in metrics:
+        raise ValueError("Uncertainty metrics require log-variance outputs.")
+
+    selection_cfg = config["training"].get("uncertainty_selection", {})
+    target_picp = float(selection_cfg.get("target_picp", 0.95))
+    min_picp = float(selection_cfg.get("min_picp", 0.90))
+    alpha = float(selection_cfg.get("alpha", 0.05))
+    z_value = float(selection_cfg.get("z_value", 1.96))
+    picp_penalty_weight = float(selection_cfg.get("picp_penalty_weight", 1000.0))
+
+    mu = np.asarray(metrics["mu"], dtype=np.float64)
+    sigma = np.exp(0.5 * np.asarray(metrics["logvar"], dtype=np.float64))
+    true = np.asarray(metrics["true"], dtype=np.float64)
+    sigma_scale = calibrate_sigma_scale(mu, sigma, true, target_picp=target_picp, z=z_value)
+    calibrated = summarize_calibrated_uncertainty(mu, sigma, true, sigma_scale, alpha=alpha, z=z_value)
+    picp_gap = max(min_picp - calibrated["picp"], 0.0)
+    selection_score = calibrated["interval_score"] + picp_penalty_weight * picp_gap
+
+    return {
+        "val_cal_sigma_scale": sigma_scale,
+        "val_cal_picp": calibrated["picp"],
+        "val_cal_mpiw": calibrated["mpiw"],
+        "val_cal_interval_score": calibrated["interval_score"],
+        "val_cal_picp_gap": picp_gap,
+        "val_cal_selection_score": selection_score,
+        "val_cal_eligible": calibrated["picp"] >= min_picp,
+        "val_cal_target_picp": target_picp,
+        "val_cal_min_picp": min_picp,
+    }
+
+
+def is_better_uncertainty_candidate(current: dict, best: dict | None) -> bool:
+    """按约束式规则比较两个不确定性模型候选。"""
+    if best is None:
+        return True
+
+    current_eligible = bool(current["val_cal_eligible"])
+    best_eligible = bool(best["val_cal_eligible"])
+    if current_eligible != best_eligible:
+        return current_eligible
+
+    if current_eligible and best_eligible:
+        if current["val_cal_interval_score"] != best["val_cal_interval_score"]:
+            return current["val_cal_interval_score"] < best["val_cal_interval_score"]
+        return current["val_rmse"] < best["val_rmse"]
+
+    if current["val_cal_picp_gap"] != best["val_cal_picp_gap"]:
+        return current["val_cal_picp_gap"] < best["val_cal_picp_gap"]
+    if current["val_cal_interval_score"] != best["val_cal_interval_score"]:
+        return current["val_cal_interval_score"] < best["val_cal_interval_score"]
+    return current["val_rmse"] < best["val_rmse"]
 
 
 def save_checkpoint(

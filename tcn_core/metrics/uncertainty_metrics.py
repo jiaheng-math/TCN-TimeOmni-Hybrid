@@ -24,3 +24,26 @@ def compute_mpiw(lower, upper) -> float:
     lower = np.asarray(lower, dtype=np.float64)
     upper = np.asarray(upper, dtype=np.float64)
     return float(np.mean(upper - lower))
+
+
+def compute_interval_score(lower, upper, true, alpha: float = 0.05) -> float:
+    """平均区间得分（Mean Interval Score）。
+
+    对于 1 - alpha 预测区间：
+    score = (upper - lower)
+            + 2 / alpha * (lower - true), if true < lower
+            + 2 / alpha * (true - upper), if true > upper
+
+    分数越小越好。它同时鼓励：
+    - 区间更窄
+    - 漏覆盖时受到更强惩罚
+    """
+    lower = np.asarray(lower, dtype=np.float64)
+    upper = np.asarray(upper, dtype=np.float64)
+    true = np.asarray(true, dtype=np.float64)
+
+    width = upper - lower
+    below_penalty = np.maximum(lower - true, 0.0)
+    above_penalty = np.maximum(true - upper, 0.0)
+    score = width + (2.0 / alpha) * (below_penalty + above_penalty)
+    return float(np.mean(score))

@@ -18,12 +18,14 @@ from datasets.cmapss_dataset import build_dataloaders
 from models import build_model, count_parameters
 from utils.experiment import get_experiment_name
 from utils.logger import append_results_summary, get_timestamp, save_history, save_json, setup_logger
-from utils.calibration import apply_sigma_scale, calibrate_sigma_scale
+from utils.calibration import apply_sigma_scale
 from utils.seed import set_seed
 from utils.training import (
+    compute_calibrated_uncertainty_metrics,
     compute_engine_level_metrics,
     evaluate_on_test,
     get_monitor_value,
+    is_better_uncertainty_candidate,
     run_epoch,
     save_checkpoint,
 )
@@ -107,13 +109,15 @@ def main() -> None:
     train_summary_path = Path(config["output"]["logs_dir"]) / f"train_summary_{experiment_name}.json"
     results_summary_path = Path(config["output"]["results_dir"]) / "results_summary.csv"
 
-    monitor_name = config["training"].get("early_stopping_monitor", "val_loss")
+    default_monitor = "val_cal_selection_score" if model_type == "uncertainty" else "val_rmse"
+    monitor_name = config["training"].get("early_stopping_monitor", default_monitor)
     scheduler_monitor = config["training"].get("scheduler_monitor", monitor_name)
 
     best_monitor_value = math.inf
     best_val_loss = math.inf
     best_val_rmse = math.inf
     best_epoch = 0
+    best_uncertainty_record = None
     epochs_without_improvement = 0  # 早停计数器
     history = []
     start_epoch = 1
@@ -131,6 +135,12 @@ def main() -> None:
         best_val_rmse = ckpt.get("best_val_rmse", math.inf)
         epochs_without_improvement = ckpt.get("epochs_without_improvement", 0)
         history = ckpt.get("history", [])
+        if model_type == "uncertainty":
+            for candidate in history:
+                if "val_cal_interval_score" not in candidate:
+                    continue
+                if is_better_uncertainty_candidate(candidate, best_uncertainty_record):
+                    best_uncertainty_record = candidate.copy()
         logger.info(
             "Resumed from epoch %d (best_val_loss=%.4f, patience=%d/%d)",
             ckpt["epoch"],
@@ -192,6 +202,11 @@ def main() -> None:
                 bundle.val_dataset.unit_ids,
                 bundle.val_dataset.cycles,
             )
+            val_eval_metrics = val_metrics
+
+        calibrated_uncertainty = {}
+        if model_type == "uncertainty":
+            calibrated_uncertainty = compute_calibrated_uncertainty_metrics(val_eval_metrics, config)
 
         record = {
             "epoch": epoch,
@@ -204,9 +219,16 @@ def main() -> None:
         if model_type == "uncertainty":
             record["val_sigma_mean"] = val_metrics["sigma_mean"]
             record["val_sigma_std"] = val_metrics["sigma_std"]
+            record.update(calibrated_uncertainty)
         history.append(record)
 
-        scheduler.step(get_monitor_value(val_metrics["loss"], val_engine["rmse"], scheduler_monitor))
+        monitor_metrics = {
+            "val_loss": val_metrics["loss"],
+            "val_rmse": val_engine["rmse"],
+        }
+        if model_type == "uncertainty":
+            monitor_metrics.update(calibrated_uncertainty)
+        scheduler.step(get_monitor_value(monitor_metrics, scheduler_monitor))
 
         log_line = (
             f"Epoch {epoch}/{total_epochs} | Train Loss {train_metrics['loss']:.4f} | "
@@ -217,15 +239,27 @@ def main() -> None:
             log_line += (
                 f" | Val Sigma Mean {val_metrics['sigma_mean']:.2f}"
                 f" | Val Sigma Std {val_metrics['sigma_std']:.2f}"
+                f" | Cal PICP {calibrated_uncertainty['val_cal_picp']:.3f}"
+                f" | Cal MPIW {calibrated_uncertainty['val_cal_mpiw']:.2f}"
+                f" | Cal IS {calibrated_uncertainty['val_cal_interval_score']:.2f}"
+                f" | Cal Scale {calibrated_uncertainty['val_cal_sigma_scale']:.3f}"
             )
         logger.info(log_line)
 
-        current_monitor = get_monitor_value(val_metrics["loss"], val_engine["rmse"], monitor_name)
-        if current_monitor < best_monitor_value:
+        current_monitor = get_monitor_value(monitor_metrics, monitor_name)
+        candidate_improved = False
+        if model_type == "uncertainty":
+            candidate_improved = is_better_uncertainty_candidate(record, best_uncertainty_record)
+        else:
+            candidate_improved = current_monitor < best_monitor_value
+
+        if candidate_improved:
             best_monitor_value = current_monitor
             best_val_loss = val_metrics["loss"]
             best_val_rmse = val_engine["rmse"]
             best_epoch = epoch
+            if model_type == "uncertainty":
+                best_uncertainty_record = record.copy()
             epochs_without_improvement = 0
             # 保存最佳模型（用于最终评估）
             save_checkpoint(
@@ -285,10 +319,16 @@ def main() -> None:
             config=config,
             stage_name="Calibration",
         )
-        val_sigma = np.exp(0.5 * val_cal_metrics["logvar"])
-        sigma_scale = calibrate_sigma_scale(val_cal_metrics["mu"], val_sigma, val_cal_metrics["true"])
+        calibrated_summary = compute_calibrated_uncertainty_metrics(val_cal_metrics, config)
+        sigma_scale = calibrated_summary["val_cal_sigma_scale"]
         save_json({"sigma_scale": sigma_scale}, sigma_scale_path)
-        logger.info("Sigma scale calibrated on val set: T = %.4f", sigma_scale)
+        logger.info(
+            "Sigma scale calibrated on val set: T = %.4f | PICP = %.4f | MPIW = %.4f | Interval Score = %.4f",
+            sigma_scale,
+            calibrated_summary["val_cal_picp"],
+            calibrated_summary["val_cal_mpiw"],
+            calibrated_summary["val_cal_interval_score"],
+        )
 
     test_result = evaluate_on_test(model, bundle.test_loader, bundle.test_dataset, device, model_type, config)
 
@@ -300,11 +340,14 @@ def main() -> None:
         test_raw_lower = np.asarray(test_result["lower"])
         test_raw_sigma = (test_mu - test_raw_lower) / 1.96
         cal = apply_sigma_scale(test_mu, test_raw_sigma, sigma_scale)
-        from metrics.uncertainty_metrics import compute_mpiw, compute_picp
+        from metrics.uncertainty_metrics import compute_interval_score, compute_mpiw, compute_picp
         test_result["test_picp_raw"] = test_result["test_picp"]
         test_result["test_mpiw_raw"] = test_result["test_mpiw"]
         test_result["test_picp"] = compute_picp(cal["lower"], cal["upper"], np.asarray(test_result["true_rul"]))
         test_result["test_mpiw"] = compute_mpiw(cal["lower"], cal["upper"])
+        test_result["test_interval_score"] = compute_interval_score(
+            cal["lower"], cal["upper"], np.asarray(test_result["true_rul"])
+        )
         test_result["lower"] = cal["lower"].tolist()
         test_result["upper"] = cal["upper"].tolist()
         test_result["sigma_scale"] = sigma_scale
@@ -325,6 +368,7 @@ def main() -> None:
     if model_type == "uncertainty":
         result_record["test_picp"] = test_result["test_picp"]
         result_record["test_mpiw"] = test_result["test_mpiw"]
+        result_record["test_interval_score"] = test_result["test_interval_score"]
         result_record["sigma_scale"] = sigma_scale
     append_results_summary(result_record, results_summary_path)
 
@@ -345,6 +389,7 @@ def main() -> None:
         logger.info("  Test PICP (raw)  : %.4f", test_result.get("test_picp_raw", test_result["test_picp"]))
         logger.info("  Test PICP (cal)  : %.4f", test_result["test_picp"])
         logger.info("  Test MPIW (cal)  : %.4f", test_result["test_mpiw"])
+        logger.info("  Test Interval Score (cal): %.4f", test_result["test_interval_score"])
         logger.info("  Sigma scale      : %.4f", sigma_scale)
     logger.info("=" * 60)
 

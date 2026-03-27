@@ -16,7 +16,7 @@ from datasets.cmapss_dataset import build_dataloaders
 from losses.gaussian_nll import composite_uncertainty_loss, gaussian_nll_loss, weighted_point_loss
 from metrics.phm_score import compute_phm_score
 from metrics.rmse import compute_rmse
-from metrics.uncertainty_metrics import compute_mpiw, compute_picp
+from metrics.uncertainty_metrics import compute_interval_score, compute_mpiw, compute_picp
 from models import build_model
 from utils.experiment import get_experiment_name
 from utils.calibration import apply_sigma_scale, calibrate_sigma_scale
@@ -155,6 +155,7 @@ def main() -> None:
         payload["test_mpiw_raw"] = payload["test_mpiw"]
         payload["test_picp"] = compute_picp(cal["lower"], cal["upper"], test_true)
         payload["test_mpiw"] = compute_mpiw(cal["lower"], cal["upper"])
+        payload["test_interval_score"] = compute_interval_score(cal["lower"], cal["upper"], test_true)
         payload["lower"] = cal["lower"].tolist()
         payload["upper"] = cal["upper"].tolist()
         payload["sigma_scale"] = sigma_scale
@@ -166,6 +167,7 @@ def main() -> None:
         logger.info("Test PICP (raw): %.4f", payload["test_picp_raw"])
         logger.info("Test PICP (cal): %.4f", payload["test_picp"])
         logger.info("Test MPIW (cal): %.4f", payload["test_mpiw"])
+        logger.info("Test Interval Score (cal): %.4f", payload["test_interval_score"])
 
     eval_path = Path(config["output"]["logs_dir"]) / f"evaluation_{experiment_name}_{timestamp}.json"
     save_json(payload, eval_path)
