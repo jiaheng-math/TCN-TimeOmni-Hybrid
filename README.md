@@ -206,18 +206,4 @@ python scripts/run_full_pipeline.py \
 
 这些变量会在加载配置时自动展开。
 
-## 输出文件
 
-我检查并修了两个关键点：
-
-- TCN 训练日志和测试结果本来就带时间戳，不会和同一实验的历史运行冲突
-- `hybrid` 默认输出我已经改成带时间戳的文件名，避免重复运行时覆盖
-
-需要注意的是，TCN 可视化图像仍然沿用原实验名文件名：
-
-- `loss_curve_<experiment_name>.png`
-- `rul_prediction_<experiment_name>.png`
-- `engine_degradation_<experiment_name>.png`
-- `warning_demo_<experiment_name>.png`
-
-这意味着同一个实验名重复可视化时会覆盖旧图。这一行为和你原 TCN 项目一致，我暂时保留了。
