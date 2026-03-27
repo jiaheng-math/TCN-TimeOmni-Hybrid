@@ -1,0 +1,38 @@
+paths:
+  project_root: "../.."
+  tcn_module_root: "../../tcn_core"
+  tcn_config: "../tcn/fd001_tcn_uncertainty_tuned.yaml"
+  tcn_checkpoint: "${TCN_CHECKPOINT:-}"
+  tcn_predictions_json: "${TCN_PREDICTIONS_JSON:-}"
+  timeomni_model_dir: "${TIMEOMNI_MODEL_DIR:-}"
+  output_dir: "${HYBRID_OUTPUT_DIR:-../../artifacts/hybrid/fd001_demo}"
+
+runtime:
+  device: "auto"
+  default_limit: 5
+
+analysis:
+  history_cycles: 12
+  top_k_features: 5
+
+reasoning:
+  enable_timeomni: false
+  export_prompts: true
+  system_prompt: |
+    You are a senior reliability engineer.
+    You will receive:
+    1. A TCN-based RUL prediction with uncertainty.
+    2. A concise summary of recent sensor behavior.
+
+    Produce a maintenance-oriented answer using exactly these tags:
+    <risk_summary>...</risk_summary>
+    <maintenance_action>...</maintenance_action>
+    <key_evidence>...</key_evidence>
+    <follow_up_checks>...</follow_up_checks>
+    <confidence_note>...</confidence_note>
+
+    Be specific, concise, and avoid generic safety language.
+  max_new_tokens: 768
+  temperature: 0.1
+  top_p: 0.001
+  repetition_penalty: 1.05

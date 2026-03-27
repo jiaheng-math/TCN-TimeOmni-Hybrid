@@ -1,263 +1,223 @@
-# 基于不确定性感知时序建模的航空发动机剩余寿命预测与维护预警方法研究
+# TCN-TimeOmni-Hybrid
 
-本项目基于 NASA CMAPSS 数据集实现一个可直接运行的小型 PyTorch 实验框架，先在 `FD001` 上完成航空发动机剩余寿命预测，再保留迁移到 `FD003` 的接口。框架同时支持：
+一个单仓库的杂交项目，面向以下完整流程：
 
-- 点预测 TCN baseline
-- 异方差高斯输出头的不确定性 TCN
-- 复合损失（NLL + 点预测损失）提升不确定性模型预测精度
-- 训练、验证、测试评估
-- 结果可视化
-- 基于预测区间下界和不确定性的四级预警示意
+1. 从头训练 TCN RUL 模型
+2. 生成带不确定性的 RUL 预测结果
+3. 基于预测结果和近期传感器变化构造维护分析 prompt
+4. 调用 TimeOmni 做推理解释和决策建议
 
-## 目录结构
+## 目录
 
 ```text
-project/
-├── data/
+TCN-TimeOmni-Hybrid/
+├── artifacts/                      # 训练结果、checkpoint、日志、混合报告
 ├── configs/
-│   ├── fd001_tcn_point.yaml
-│   ├── fd001_tcn_point_tuned.yaml
-│   ├── fd001_tcn_uncertainty.yaml
-│   ├── fd001_tcn_uncertainty_rmse_select.yaml
-│   ├── fd001_tcn_uncertainty_tuned.yaml
-│   └── fd003_tcn_uncertainty.yaml
-├── datasets/
-│   └── cmapss_dataset.py
-├── models/
-│   ├── __init__.py
-│   ├── tcn.py
-│   ├── heads.py
-│   └── tcn_rul_model.py
-├── losses/
-│   └── gaussian_nll.py
-├── metrics/
-│   ├── rmse.py
-│   ├── phm_score.py
-│   └── uncertainty_metrics.py
-├── utils/
-│   ├── seed.py
-│   ├── scaler.py
-│   ├── logger.py
-│   ├── plotting.py
-│   ├── warning.py
-│   ├── training.py
-│   ├── experiment.py
-│   ├── calibration.py
-│   └── rul.py
+│   ├── hybrid/
+│   │   ├── fd001_hybrid_local.yaml
+│   │   └── fd001_hybrid_point_local.yaml
+│   └── tcn/
+│       ├── fd001_tcn_uncertainty_tuned.yaml
+│       └── fd001_tcn_point_tuned.yaml
+├── data/                           # 放 CMAPSS 数据，也可放 TimeOmni 测试集
 ├── scripts/
-│   ├── preprocess_cmapss.py
-│   ├── train.py
-│   ├── evaluate.py
-│   └── visualize.py
-├── tests/
-│   └── test_phm_score.py
-├── results/
-│   ├── figures/
-│   ├── checkpoints/
-│   └── logs/
-├── requirements.txt
-└── README.md
+│   ├── preprocess_tcn.py
+│   ├── train_tcn.py
+│   ├── evaluate_tcn.py
+│   ├── run_hybrid_demo.py
+│   └── run_full_pipeline.py
+├── src/hybrid_rul/                 # 融合层
+├── tcn_core/                       # vendored TCN 项目代码
+└── timeomni_core/                  # vendored TimeOmni 项目代码
 ```
 
-## 环境安装
+## 环境
 
-建议固定使用 `Python 3.10`。
-
-推荐环境：
-
-- Python `3.10`
-- PyTorch `2.2.2`
-- numpy `1.26.4`
-- pandas `2.2.3`
-- scikit-learn `1.5.2`
-- scipy `1.14.1`
-- matplotlib `3.9.2`
-- PyYAML `6.0.2`
-- tqdm `4.66.5`
-- pytest `8.3.3`
+基础安装：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 数据放置方式
-
-将 NASA CMAPSS 原始文件放到 `data/` 目录下，或直接在项目根目录保留 `CMAPSSData.zip`。脚本会优先读取：
-
-- `data/train_FD001.txt`
-- `data/test_FD001.txt`
-- `data/RUL_FD001.txt`
-- `data/train_FD003.txt`
-- `data/test_FD003.txt`
-- `data/RUL_FD003.txt`
-
-如果 `data/` 中缺少目标子集文件，而根目录存在 `CMAPSSData.zip`，脚本会自动提取所需文件。
-
-## 训练命令
-
-点预测（调优版）：
+也可以直接：
 
 ```bash
-python scripts/train.py --config configs/fd001_tcn_point_tuned.yaml
+make install
 ```
 
-不确定性模型（调优版，复合损失）：
+如果你要完整跑 `timeomni_core/eval/` 里的 vLLM 评测，再额外安装对应环境。
+
+## 数据准备
+
+### CMAPSS
+
+把以下文件放到仓库根目录下的 `data/`：
+
+- `train_FD001.txt`
+- `test_FD001.txt`
+- `RUL_FD001.txt`
+
+也兼容把 `CMAPSSData.zip` 放在仓库根目录。
+
+### TimeOmni 模型
+
+如果只导出 prompt，不需要本地模型。
+
+如果要实际做推理，在 `configs/hybrid/fd001_hybrid_local.yaml` 中填入：
+
+- `paths.timeomni_model_dir`
+
+它应该指向本地可被 `transformers` 读取的 TimeOmni 模型目录。
+
+仓库里已经提供了环境变量模板：
+
+`.env.example`
+
+## 从头训练 TCN
+
+使用当前主线的 tuned 配置：
 
 ```bash
-python scripts/train.py --config configs/fd001_tcn_uncertainty_tuned.yaml
+python scripts/train_tcn.py --config configs/tcn/fd001_tcn_uncertainty_tuned.yaml
 ```
 
-不确定性模型（NLL 选模，用于不确定性校准分析）：
+或者：
 
 ```bash
-python scripts/train.py --config configs/fd001_tcn_uncertainty.yaml
+make train
 ```
 
-不确定性模型（RMSE 选模，用于与点预测公平比较）：
+做点预测消融时可以直接换成：
 
 ```bash
-python scripts/train.py --config configs/fd001_tcn_uncertainty_rmse_select.yaml
+python scripts/train_tcn.py --config configs/tcn/fd001_tcn_point_tuned.yaml
 ```
 
-迁移到 FD003：
+可选预处理查看：
 
 ```bash
-python scripts/train.py --config configs/fd003_tcn_uncertainty.yaml
+python scripts/preprocess_tcn.py --config configs/tcn/fd001_tcn_uncertainty_tuned.yaml
 ```
 
-断点续训：在任何训练命令后加 `--resume`。
+训练完成后，checkpoint 默认输出到：
 
-## 评估命令
+```text
+artifacts/tcn/checkpoints/
+```
+
+如果你的 checkpoint 已经在云平台上，直接放到 `artifacts/tcn/checkpoints/` 就可以。
+
+如果你想显式指定某个 checkpoint，也可以直接设置：
 
 ```bash
-python scripts/evaluate.py --config configs/fd001_tcn_uncertainty_tuned.yaml
+export TCN_CHECKPOINT=artifacts/tcn/checkpoints/best_model_fd001_tcn_uncertainty_tuned.pth
 ```
 
-## 可视化命令
+
+## 运行融合推理
 
 ```bash
-python scripts/visualize.py --config configs/fd001_tcn_uncertainty_tuned.yaml
+python scripts/run_hybrid_demo.py --config configs/hybrid/fd001_hybrid_local.yaml
 ```
 
-## 数据预处理命令
+或者：
 
 ```bash
-python scripts/preprocess_cmapss.py --config configs/fd001_tcn_uncertainty_tuned.yaml
+make hybrid
 ```
 
-## 配置说明
+TCN 原来的可视化入口也已经补成了统一包装脚本：
 
-所有核心参数均通过 YAML 配置管理。
+```bash
+python scripts/visualize_tcn.py --config configs/tcn/fd001_tcn_uncertainty_tuned.yaml
+python scripts/visualize_tcn.py --config configs/tcn/fd001_tcn_point_tuned.yaml
+```
 
-### 配置文件一览
+或者：
 
-| 配置文件 | 模型类型 | 损失函数 | 选模指标 | 用途 |
-|---------|---------|---------|---------|------|
-| `fd001_tcn_point.yaml` | 点预测 | MSE | val_loss | 基线点预测 |
-| `fd001_tcn_point_tuned.yaml` | 点预测 | Smooth L1 + 低RUL加权 | val_rmse | 调优点预测 |
-| `fd001_tcn_uncertainty.yaml` | 不确定性 | Gaussian NLL | val_loss | 不确定性校准分析 |
-| `fd001_tcn_uncertainty_rmse_select.yaml` | 不确定性 | Gaussian NLL | val_rmse | 与点预测公平比较 |
-| `fd001_tcn_uncertainty_tuned.yaml` | 不确定性 | NLL + Smooth L1 复合损失 | val_rmse | 调优不确定性模型 |
-| `fd003_tcn_uncertainty.yaml` | 不确定性 | NLL + Smooth L1 复合损失 | val_rmse | FD003 迁移 |
+```bash
+make visualize
+make visualize-point
+```
 
-### 配置字段
+点模型消融时，对应使用：
 
-`data`：
+```bash
+python scripts/run_hybrid_demo.py --config configs/hybrid/fd001_hybrid_point_local.yaml
+```
 
-- `subset`：数据子集，当前支持 `FD001`、`FD003`
-- `data_dir`：原始数据目录
-- `rul_clip`：训练和测试标签的 RUL 截断阈值
-- `window_size`：滑动窗口长度
-- `val_ratio`：按 `unit_id` 划分验证集比例
-- `validation_mode`：`window` 或 `pseudo_test`
-  - 论文里若比较最终 `RMSE / PHM Score`，建议使用 `pseudo_test`
-- `include_op_settings`：是否将 `op1/op2/op3` 纳入输入
-- `var_threshold`：近零方差筛选阈值，仅作用于 `s1~s21`
-- `padding_mode`：测试和轨迹可视化时左侧补齐方式，支持 `repeat`、`zero`
+默认会：
 
-`model`：
+1. 读取本仓库里的 TCN tuned 配置和训练好的 checkpoint
+2. 对测试集发动机做预测
+3. 生成传感器趋势摘要
+4. 导出 TimeOmni prompts
+5. 如果配置里启用了本地模型，再调用 TimeOmni 生成维护分析结果
 
-- `type`：`point` 或 `uncertainty`
-- `num_channels`：TCN 每层通道数
-- `kernel_size`：因果卷积核大小
-- `dropout`：dropout 概率
+输出默认在：
 
-`training`：
+```text
+artifacts/hybrid/fd001_demo/
+```
 
-- `batch_size`、`epochs`、`lr`
-- `weight_decay`
-- `optimizer`：当前实现支持 `Adam`、`AdamW`，默认使用 `AdamW`
-- `scheduler`：当前实现为 `ReduceLROnPlateau`
-- `scheduler_monitor`：可选 `val_loss` 或 `val_rmse`
-- `scheduler_patience`、`scheduler_factor`
-- `early_stopping_monitor`：可选 `val_loss` 或 `val_rmse`
-  - 不确定性校准分析建议保留 `val_loss`
-  - 与点预测做预测精度公平对比时，建议统一为 `val_rmse`
-- `early_stopping_patience`
-- `point_loss`：点预测损失，支持 `mse`、`smooth_l1`
-- `smooth_l1_beta`
-- `point_loss_weight`：复合损失中点预测损失的权重 λ（仅不确定性模型）
-  - 总损失 = NLL + λ × PointLoss
-  - 不设置或为 0 时退化为纯 NLL
-  - 建议范围 0.1 ~ 0.5，越大越偏向点预测精度
-- `low_rul_threshold`、`low_rul_weight`：对小 RUL 样本加权
-- `gradient_clip_norm`
-- `clip_predictions`：评估与可视化时将预测裁剪到 `[0, rul_clip]`
-- `seed`
+## 一键串起训练和融合
 
-`warning`：
+```bash
+python scripts/run_full_pipeline.py \
+  --tcn-config configs/tcn/fd001_tcn_uncertainty_tuned.yaml \
+  --hybrid-config configs/hybrid/fd001_hybrid_local.yaml
+```
 
-- `thresholds.normal`
-- `thresholds.watch`
-- `thresholds.alert`
-- `sigma_escalation`
-- `sigma_threshold`
+或者：
 
-`output`：
+```bash
+make full
+```
 
-- `results_dir`
-- `figures_dir`
-- `checkpoint_dir`
-- `logs_dir`
+如果只想跳过训练、直接读已有 checkpoint：
 
-## 指标说明
+```bash
+python scripts/run_full_pipeline.py \
+  --tcn-config configs/tcn/fd001_tcn_uncertainty_tuned.yaml \
+  --hybrid-config configs/hybrid/fd001_hybrid_local.yaml \
+  --skip-train
+```
 
-- `RMSE`：均方根误差
-- `PHM Score`：CMAPSS 常用累计惩罚分数。高估惩罚更重，定义如下：
-  - `d = pred - true`
-  - `d < 0` 时，`exp(-d / 13) - 1`
-  - `d >= 0` 时，`exp(d / 10) - 1`
-- `Gaussian NLL`：不确定性模型的训练和早停指标
-- `PICP`：预测区间覆盖率（校准后应接近 0.95）
-- `MPIW`：预测区间平均宽度
+点模型版本只需要把两个配置一起替换：
 
-## 预警逻辑说明
+```bash
+python scripts/run_full_pipeline.py \
+  --tcn-config configs/tcn/fd001_tcn_point_tuned.yaml \
+  --hybrid-config configs/hybrid/fd001_hybrid_point_local.yaml
+```
 
-不确定性模型输出 `mu` 与 `logvar`，其中：
+## 环境变量
 
-- `logvar = log(sigma^2)`
-- `sigma = exp(0.5 * logvar)`
+当前支持的关键环境变量：
 
-预警模块使用 95% 置信下界：
+- `CMAPSS_DATA_DIR`
+- `TCN_RESULTS_DIR`
+- `TCN_FIGURES_DIR`
+- `TCN_CHECKPOINT_DIR`
+- `TCN_LOGS_DIR`
+- `TCN_CHECKPOINT`
+- `TIMEOMNI_MODEL_DIR`
+- `HYBRID_OUTPUT_DIR`
 
-- `lower = mu - 1.96 * sigma`
+这些变量会在加载配置时自动展开。
 
-基础预警等级：
+## 输出文件
 
-- `lower > 80`：正常
-- `50 < lower <= 80`：关注
-- `20 < lower <= 50`：预警
-- `lower <= 20`：危险
+我检查并修了两个关键点：
 
-若 `sigma > sigma_threshold` 且当前等级不是"危险"，则上调一级。
+- TCN 训练日志和测试结果本来就带时间戳，不会和同一实验的历史运行冲突
+- `hybrid` 默认输出我已经改成带时间戳的文件名，避免重复运行时覆盖
 
-## 实现细节
+需要注意的是，TCN 可视化图像仍然沿用原实验名文件名：
 
-- TCN 使用严格因果卷积，只在序列左侧 padding
-- 训练/验证划分按 `unit_id`，同一发动机不会同时出现在 train 和 val
-- 近零方差筛选和标准化仅使用训练集拟合，再应用到 val/test
-- benchmark 测试集每台发动机仅保留一个最后窗口，标签直接来自 `RUL_FDxxx.txt`
-- 训练完成后自动在测试集评估，并将结果追加到 `results/results_summary.csv`
-- 训练引擎（`run_epoch`、`evaluate_on_test` 等）统一抽取到 `utils/training.py`，三个脚本共享同一套评估逻辑
-- 模型构建函数 `build_model` 统一放在 `models/__init__.py`，避免重复定义
-- 不确定性模型训练完成后自动进行后验 σ 校准（temperature scaling）：在验证集上搜索缩放系数 T 使 PICP 达到 95%，不改变 μ 精度。校准系数保存到 `results/checkpoints/sigma_scale_*.json`，评估和可视化时自动加载
+- `loss_curve_<experiment_name>.png`
+- `rul_prediction_<experiment_name>.png`
+- `engine_degradation_<experiment_name>.png`
+- `warning_demo_<experiment_name>.png`
+
+这意味着同一个实验名重复可视化时会覆盖旧图。这一行为和你原 TCN 项目一致，我暂时保留了。

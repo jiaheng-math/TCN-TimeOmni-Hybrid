@@ -60,6 +60,8 @@ def run_epoch(
     mus = []
     logvars = []
 
+    force_tqdm = bool(config["training"].get("force_tqdm", False))
+    disable_tqdm = bool(config["training"].get("disable_tqdm", False))
     stage = stage_name or ("Train" if train else "Eval")
     epoch_desc = f"Epoch {epoch}/{total_epochs}" if epoch is not None and total_epochs is not None else "Inference"
     progress = tqdm(
@@ -67,7 +69,7 @@ def run_epoch(
         desc=f"{epoch_desc} [{stage}]",
         leave=False,
         dynamic_ncols=True,
-        disable=not sys.stderr.isatty(),
+        disable=disable_tqdm or (not force_tqdm and not sys.stderr.isatty()),
     )
 
     for batch_idx, (x, y) in enumerate(progress, start=1):
