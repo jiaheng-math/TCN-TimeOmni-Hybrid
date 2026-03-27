@@ -36,6 +36,7 @@ reasoning:
     - Ground every section in the provided numbers. Mention predicted RUL, warning level, and at least two sensor names when relevant.
     - Explicitly repeat the given warning level in <risk_summary> or <confidence_note>.
     - Mention at least two sensor names selected from the provided recent feature trends.
+    - In <key_evidence> and <follow_up_checks>, mention at least two sensor names from the provided recent feature trends.
     - Use only the thresholds and action rules given in the input. Do not invent any extra threshold.
     - If the input gives a recommended action window for the current warning level, follow it unless you explicitly explain a stricter choice from the provided numbers.
     - Do not output <thought>, chain-of-thought, hidden reasoning, or any internal analysis.
