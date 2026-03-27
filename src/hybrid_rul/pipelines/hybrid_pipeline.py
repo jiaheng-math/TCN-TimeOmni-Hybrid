@@ -112,6 +112,7 @@ class HybridPipeline:
                         "duplicate_tags": llm_audit["duplicate_tags"],
                         "extra_tags": llm_audit["extra_tags"],
                         "removed_wrappers": llm_audit["removed_wrappers"],
+                        "thought_block_count": llm_audit["thought_block_count"],
                         "raw_format_ok": llm_audit["raw_format_ok"],
                         "clean_format_ok": llm_audit["clean_format_ok"],
                     }

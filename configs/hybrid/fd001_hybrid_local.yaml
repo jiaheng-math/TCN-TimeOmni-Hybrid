@@ -37,12 +37,13 @@ reasoning:
     - Use only the thresholds and action rules given in the input. Do not invent any threshold such as "danger means below 100 cycles" unless it is explicitly provided.
     - If the lower bound and warning level do not justify immediate action, do not recommend immediate action.
     - If the input gives a recommended action window for the current warning level, follow it unless you explicitly explain a stricter choice from the provided numbers.
+    - Do not output <thought>, chain-of-thought, hidden reasoning, or any internal analysis.
     - Do not repeat the prompt wording or reuse the same sentence template across cases.
     - Avoid generic phrases like "closely monitor" unless you also state what to monitor and why.
     - In <maintenance_action>, state a concrete action window such as immediate, next 10 cycles, next 20 cycles, or routine monitoring.
     - In <confidence_note>, explain confidence from the uncertainty and sensor evidence, not from vague judgement.
     - Output only the five tags and their contents. No extra wrapper tags, markdown fences, bullet titles, or preamble.
   max_new_tokens: 768
-  temperature: 0.1
-  top_p: 0.9
+  temperature: 0.0
+  top_p: 1.0
   repetition_penalty: 1.05

@@ -13,6 +13,7 @@ TARGET_TAGS = [
 TARGET_TAG_SET = set(TARGET_TAGS)
 GENERIC_TAG_PATTERN = re.compile(r"</?([A-Za-z][A-Za-z0-9_:-]*)\b[^>]*>")
 SENSOR_PATTERN = re.compile(r"\bs\d+\b", re.IGNORECASE)
+THOUGHT_BLOCK_PATTERN = re.compile(r"<thought>.*?</thought>\s*", re.DOTALL | re.IGNORECASE)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -22,6 +23,11 @@ def _strip_code_fences(text: str) -> str:
         if len(lines) >= 2:
             return "\n".join(lines[1:-1]).strip()
     return stripped
+
+
+def _strip_thought_blocks(text: str) -> tuple[str, int]:
+    cleaned, count = THOUGHT_BLOCK_PATTERN.subn("", text)
+    return cleaned.strip(), count
 
 
 def _unwrap_outer_tags(text: str) -> tuple[str, list[str]]:
@@ -64,7 +70,8 @@ def _find_extra_tags(text: str) -> list[str]:
 def normalize_llm_response(response: str | None) -> dict[str, Any]:
     raw_text = "" if response is None else response
     stripped = _strip_code_fences(raw_text)
-    unwrapped, removed_wrappers = _unwrap_outer_tags(stripped)
+    thought_stripped, thought_block_count = _strip_thought_blocks(stripped)
+    unwrapped, removed_wrappers = _unwrap_outer_tags(thought_stripped)
     contents, counts = _extract_tag_contents(unwrapped)
     missing_tags = [tag for tag in TARGET_TAGS if counts.get(tag, 0) == 0]
     duplicate_tags = [tag for tag in TARGET_TAGS if counts.get(tag, 0) > 1]
@@ -76,12 +83,14 @@ def normalize_llm_response(response: str | None) -> dict[str, Any]:
 
     return {
         "raw_text": raw_text,
+        "thought_stripped_text": thought_stripped,
         "cleaned_text": cleaned_text,
         "tags": contents,
         "missing_tags": missing_tags,
         "duplicate_tags": duplicate_tags,
         "extra_tags": extra_tags,
         "removed_wrappers": removed_wrappers,
+        "thought_block_count": thought_block_count,
         "raw_format_ok": not missing_tags and not duplicate_tags and not extra_tags and not removed_wrappers,
         "clean_format_ok": cleaned_text is not None,
     }

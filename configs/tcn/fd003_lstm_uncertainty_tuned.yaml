@@ -1,0 +1,60 @@
+data:
+  subset: "FD003"
+  data_dir: "${CMAPSS_DATA_DIR:-data/}"
+  rul_clip: 130
+  window_size: 45
+  val_ratio: 0.2
+  validation_mode: "pseudo_test"
+  include_op_settings: false
+  var_threshold: 1.0e-4
+  padding_mode: "repeat"
+
+model:
+  backbone: "lstm"
+  type: "uncertainty"
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.2
+  bidirectional: false
+
+training:
+  batch_size: 128
+  epochs: 180
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  optimizer: "AdamW"
+  scheduler: "ReduceLROnPlateau"
+  scheduler_monitor: "val_cal_selection_score"
+  scheduler_patience: 8
+  scheduler_factor: 0.5
+  early_stopping_monitor: "val_cal_selection_score"
+  early_stopping_patience: 30
+  point_loss: "smooth_l1"
+  smooth_l1_beta: 2.0
+  point_loss_weight: 0.05
+  low_rul_threshold: 40
+  low_rul_weight: 2.5
+  gradient_clip_norm: 1.0
+  clip_predictions: true
+  force_tqdm: true
+  seed: 42
+  uncertainty_selection:
+    target_picp: 0.95
+    min_picp: 0.90
+    alpha: 0.05
+    z_value: 1.96
+    picp_penalty_weight: 1000.0
+
+warning:
+  thresholds:
+    normal: 80
+    watch: 50
+    alert: 20
+  sigma_escalation: true
+  sigma_threshold: 15
+
+output:
+  results_dir: "${TCN_RESULTS_DIR:-artifacts/tcn/results/}"
+  figures_dir: "${TCN_FIGURES_DIR:-artifacts/tcn/figures/}"
+  checkpoint_dir: "${TCN_CHECKPOINT_DIR:-artifacts/tcn/checkpoints/}"
+  logs_dir: "${TCN_LOGS_DIR:-artifacts/tcn/logs/}"
