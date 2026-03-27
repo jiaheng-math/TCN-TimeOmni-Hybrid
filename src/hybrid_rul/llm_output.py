@@ -112,6 +112,9 @@ def _contains_approx_value(text: str, value: float | None) -> bool:
 
 def _extract_action_urgency(text: str) -> tuple[int | None, str | None]:
     lowered = text.lower()
+    if "no immediate action" in lowered:
+        # Treated as a weak form of routine handling unless a stronger explicit window is present later.
+        return 0, "no immediate action"
     if "immediate" in lowered:
         return 3, "immediate"
     if re.search(r"next\s+10\s+cycles", lowered):
@@ -175,6 +178,10 @@ def evaluate_response_quality(
             consistency_issues.append("danger-threshold claim conflicts with the actual lower bound.")
     if lower_bound is not None and lower_bound > thresholds["watch"] and "immediate action" in lowered:
         consistency_issues.append("maintenance urgency appears stronger than the current lower-bound risk level.")
+    if "no immediate action" in lowered and (
+        "replace" in lowered or "replacement" in lowered or "shutdown" in lowered or "full inspection" in lowered
+    ):
+        consistency_issues.append("the response says no immediate action but still recommends a strong intervention.")
 
     expected_urgency = _expected_action_urgency(prediction, thresholds)
     actual_urgency, action_label = _extract_action_urgency(text)
@@ -215,5 +222,6 @@ def evaluate_response_quality(
             "actual_urgency": actual_urgency,
             "expected_min_urgency": expected_urgency,
             "assessment": action_assessment,
+            "has_explicit_window": action_label is not None,
         },
     }

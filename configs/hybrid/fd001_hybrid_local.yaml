@@ -34,6 +34,8 @@ reasoning:
 
     Requirements:
     - Ground every section in the provided numbers. Mention predicted RUL, lower bound, warning level, and at least two sensor names when relevant.
+    - Explicitly repeat the given warning level in <risk_summary> or <confidence_note>.
+    - Mention at least two sensor names selected from the provided recent feature trends.
     - Use only the thresholds and action rules given in the input. Do not invent any threshold such as "danger means below 100 cycles" unless it is explicitly provided.
     - If the lower bound and warning level do not justify immediate action, do not recommend immediate action.
     - If the input gives a recommended action window for the current warning level, follow it unless you explicitly explain a stricter choice from the provided numbers.
@@ -41,6 +43,7 @@ reasoning:
     - Do not repeat the prompt wording or reuse the same sentence template across cases.
     - Avoid generic phrases like "closely monitor" unless you also state what to monitor and why.
     - In <maintenance_action>, state a concrete action window such as immediate, next 10 cycles, next 20 cycles, or routine monitoring.
+    - In <maintenance_action>, explicitly write one of: immediate, next 10 cycles, next 20 cycles, routine monitoring.
     - In <confidence_note>, explain confidence from the uncertainty and sensor evidence, not from vague judgement.
     - Output only the five tags and their contents. No extra wrapper tags, markdown fences, bullet titles, or preamble.
   max_new_tokens: 768
